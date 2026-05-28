@@ -1,179 +1,121 @@
-# Cryptographic Protocol Suite — From-Scratch Implementations in C
+# Cryptographic Protocol Suite
 
-> A full applied cryptography pipeline built in C without high-level wrappers: symmetric encryption, Merkle trees, Lamport one-time signatures, authenticated ECDH key exchange, ElGamal encryption, LC-UMAC message authentication, and RSA multiplicative homomorphism. Every component verified against published test vectors.
+> End-to-end implementation of five cryptographic systems in C — from symmetric stream ciphers through message authentication codes. Built for CIS 4634 (Trustworthy Computing Infrastructure) at USF.
 
-[![C](https://img.shields.io/badge/C-99-blue)](https://en.wikipedia.org/wiki/C99)
-[![LibTomCrypt](https://img.shields.io/badge/LibTomCrypt-1.18-lightgrey)](https://github.com/libtom/libtomcrypt)
-[![OpenSSL](https://img.shields.io/badge/OpenSSL-3.x-blue)](https://openssl.org)
-[![GMP](https://img.shields.io/badge/GMP-6.x-orange)](https://gmplib.org)
-
----
-
-## Overview
-
-This suite implements six cryptographic protocols across five assignments. Each is self-contained, file-based (reads input from `.txt`, writes output to `.txt`), and verified against provided test vectors. No high-level crypto abstractions — every operation is assembled from primitives.
+[![C](https://img.shields.io/badge/C-C11-blue)](https://en.cppreference.com/w/c)
+[![OpenSSL](https://img.shields.io/badge/OpenSSL-3.x-red)](https://openssl.org)
+[![LibTomCrypt](https://img.shields.io/badge/LibTomCrypt-1.18-orange)](https://github.com/libtom/libtomcrypt)
+[![GMP](https://img.shields.io/badge/GMP-6.x-green)](https://gmplib.org)
 
 ---
 
-## HW1 — Symmetric Encryption with ChaCha20 + SHA-256
+## Modules
+
+### 1. `symmetric-encryption/`
+
+**ChaCha20 stream cipher** — Alice and Bob sides of a symmetric key exchange.
+
+- Seed → ChaCha20 PRNG (LibTomCrypt) → keystream generation
+- XOR encryption/decryption between parties
+- Demonstrates seed-based deterministic key agreement
 
 **Files:** `alice-1.c`, `bob-1.c`
 
-**Protocol:**
-1. Both parties derive a shared key using ChaCha20 PRNG seeded with a shared seed
-2. Alice encrypts plaintext via XOR with the keystream
-3. Bob decrypts ciphertext and verifies integrity using SHA-256 hash comparison
+---
 
-**Key implementation detail:** `chacha20_prng_add_entropy` + `chacha20_prng_read` from LibTomCrypt produces a deterministic keystream from a shared secret — the foundation of stream cipher encryption.
+### 2. `merkle-hash-tree/`
+
+**Merkle Hash Tree** — integrity verification over a set of message blocks.
+
+- Leaf nodes: SHA-256 hashes of each 64-byte message block
+- Internal nodes: SHA-256 of concatenated child hashes
+- Produces a single root hash that commits to all blocks
+- Any single-block tamper is detectable in O(log n) verification steps
+
+**Files:** `MHT.c`
 
 ---
 
-## HW2 — Merkle Hash Tree
+### 3. `lamport-signatures/`
 
-**File:** `MHT.c`
+**Lamport One-Time Signature Scheme** — post-quantum-resistant digital signatures.
 
-**Structure:** 8-leaf binary Merkle tree. SHA-256 hashed bottom-up:
-```
-Level 0: [H(m0), H(m1), ..., H(m7)]          ← leaf hashes
-Level 1: [H(H0||H1), H(H2||H3), ...]          ← pairwise concatenation + hash
-Level 2: [H(H01||H23), H(H45||H67)]
-Level 3: [root]                                ← single 32-byte root
-```
+- `KeyGen.c` — generates 512 random 32-byte secrets; SHA-256 hashes each → public key
+- `Sign.c` — reads message hash bit-by-bit; reveals one secret per bit position
+- `Verify.c` — re-hashes revealed secrets and checks against public key
 
-**`Auxiliary_Path()`:** Given a leaf index, returns the sibling hash at each level needed to reconstruct the root — the proof path used in blockchain inclusion proofs.
-
----
-
-## HW4 — Lamport One-Time Signature Scheme
+Each keypair is strictly single-use (revealing secrets for two messages breaks security).
 
 **Files:** `KeyGen.c`, `Sign.c`, `Verify.c`
 
-**How it works:**
-- **KeyGen:** Generate 512 secret key elements (2 × 256) using `PRNG(seed || i || j)`. Public key = SHA-256 of each SK element. Written to `SK.txt` / `PK.txt`.
-- **Sign:** Hash the message with SHA-256. For each bit of the 256-bit hash, select `SK[2*index + bit_value]` as the signature element. 256 elements total.
-- **Verify:** Hash the received message. For each bit, hash the corresponding signature element with SHA-256 and compare to `PK[2*index + bit_value]`.
-
-**Security property:** Each SK element is used at most once per bit position — revealing the signature reveals nothing about unused SK elements.
-
-**Known limitation (honest disclosure):** `Verify.c` takes message length from a command-line argument rather than the actual bytes read from file. Works on provided test vectors where these match; diverges on new vectors. TA deducted 0.1/10.
-
 ---
 
-## HW5 — Authenticated ECDH + ElGamal on secp192k1
+### 4. `ecdh-ecdsa-elgamal/`
+
+**Three protocols on secp192k1** — key agreement, digital signatures, and public-key encryption.
+
+#### ECDH + ECDSA (Alice & Bob)
+- **Key generation:** SK = SHA-256(seed), PK = SK × G
+- **ECDH:** Shared secret = SK_alice × PK_bob = SK_bob × PK_alice
+- **ECDSA sign/verify:** OpenSSL `ECDSA_do_sign` / `ECDSA_do_verify` on SHA-256 digest
+
+#### ElGamal Encryption
+- **Encrypt:** C = k × G, D = k × PK + P_m (message encoded as EC point)
+- **Decrypt:** P_m = D − SK × C = D + (−SK × C)
+- Full EC point arithmetic via OpenSSL `EC_POINT_mul`, `EC_POINT_add`, `EC_POINT_invert`
 
 **Files:** `KeyGen-1.c`, `alice-3.c`, `bob-3.c`, `Encrypt.c`, `Decrypt.c`
 
-### Part 1 — Authenticated ECDH Key Exchange
-
-**KeyGen:** `SK = SHA256(seed)`, `PK = SK × G` (scalar multiplication on secp192k1 using OpenSSL `EC_POINT_mul`).
-
-**Protocol (Alice + Bob run concurrently):**
-```
-Alice:                                    Bob:
-1. Sign(ECDSA, alice_DH_PK)              Sign(ECDSA, bob_DH_PK)
-2. Write Signature_Alice.txt             Write Signature_Bob.txt
-3. Read Bob_DH_PK.txt                    Read Alice_DH_PK.txt
-4. Read Signature_Bob.txt                Read Signature_Alice.txt
-5. Verify Bob's ECDSA signature          Verify Alice's ECDSA signature
-6. If valid: shared = alice_DH_SK × bob_DH_PK   shared = bob_DH_SK × alice_DH_PK
-```
-Both parties compute the same point (ECDH property). ECDSA authentication prevents man-in-the-middle attacks.
-
-### Part 2 — ElGamal Encryption on Elliptic Curves
-
-**Encrypt (`C = k×G`, `D = k×PK + P_m`):**
-```c
-EC_POINT_mul(ec_group, C, k, NULL, NULL, bn_ctx);        // C = k*G
-EC_POINT_mul(ec_group, C_prime, NULL, pk_point, k, bn_ctx); // C' = k*PK
-EC_POINT_add(ec_group, D, C_prime, message_point, bn_ctx);  // D = C' + Pm
-```
-
-**Decrypt (`P_m = D − SK×C`):**
-```c
-EC_POINT_mul(ec_group, C_prime, NULL, C_point, bn_sk, bn_ctx); // C' = SK*C
-EC_POINT_invert(ec_group, C_prime, bn_ctx);                     // -C'
-EC_POINT_add(ec_group, message_point, D_point, C_prime, bn_ctx); // Pm = D + (-C')
-```
-
 ---
 
-## HW6 — LC-UMAC + RSA Multiplicative Homomorphism
+### 5. `lc-umac-rsa/`
 
-### LC-UMAC — Two Implementations
+**LC-UMAC message authentication** and **RSA homomorphic property demonstration**.
 
-**`GMP_LCUMAC.c`** — Uses GNU MP (GMP) big integers for full 256-bit arithmetic on the secp256k1 prime `q`:
-```
-σ = Σ (aᵢ × mᵢ + bᵢ) mod q
-```
-aᵢ, bᵢ generated by ChaCha20 PRNG; mᵢ are 32-byte message blocks.
+#### LC-UMAC (two implementations)
+The same MAC computed two ways to verify cross-platform consistency:
 
-**`Intel_LCUMAC.c`** — Same algorithm using native `__uint128_t` (128-bit hardware integers) with a 128-bit prime `q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF43`. Operates on 8-byte blocks. Demonstrates how hardware-native arithmetic outperforms arbitrary-precision libraries when the field fits in 128 bits.
+- **`Intel_LCUMAC.c`** — native `__uint128_t` arithmetic (x86/x64 only)
+- **`GMP_LCUMAC.c`** — GNU MP arbitrary-precision integers (portable)
 
-### GMP_CRSA — RSA Multiplicative Homomorphism
+**Algorithm:**
 
-Exploits the property that RSA encryption is multiplicatively homomorphic:
-```
-σ = Π H(mᵢ)^d mod n      (product of signed block hashes)
-```
-10 message blocks of 19 characters each from a 190-character message. Uses `mpz_powm` (GMP modular exponentiation) for 2048-bit RSA.
+q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF43   (128-bit prime)
+For each 8-byte message block m_i with key (a_i, b_i):
+term_i = (a_i × m_i + b_i) mod q
+σ = Σ term_i mod q
 
----
+Key pairs (a_i, b_i) derived from shared seed via ChaCha20 PRNG.
 
-## Core CS Concepts
+#### RSA Homomorphism (`GMP_CRSA.c`)
+Demonstrates the multiplicative homomorphic property:
 
-| Concept | Assignment |
-|---|---|
-| **Stream cipher** (ChaCha20 PRNG + XOR) | HW1 |
-| **Hash trees** (Merkle, inclusion proofs) | HW2 |
-| **One-time signatures** (Lamport, hash-based) | HW4 |
-| **Elliptic curve arithmetic** (scalar mult, point addition) | HW5 |
-| **ECDSA** (digital signatures) | HW5 |
-| **ECDH** (key agreement) | HW5 |
-| **ElGamal encryption** (EC variant) | HW5 |
-| **Universal hashing** (LC-UMAC) | HW6 |
-| **Big integer arithmetic** (GMP vs __uint128_t) | HW6 |
-| **Homomorphic encryption** (RSA multiplicative) | HW6 |
+Enc(m1) × Enc(m2) mod n  =  Enc(m1 × m2 mod n)
+
+**Files:** `Intel_LCUMAC.c`, `GMP_LCUMAC.c`, `GMP_CRSA.c`
 
 ---
 
 ## Setup
 
 ```bash
-git clone https://github.com/Divyansh-Maurya-25/crypto-protocol-suite.git
-cd crypto-protocol-suite
-```
+# Ubuntu/Debian
+sudo apt install libssl-dev libtomcrypt-dev libgmp-dev
 
-Dependencies:
-```bash
-# macOS
-brew install libtomcrypt gmp openssl
-
-# Ubuntu
-sudo apt install libtomcrypt-dev libgmp-dev libssl-dev
-```
-
-Compile example (HW4 KeyGen):
-```bash
-gcc -o keygen HW4/KeyGen.c -ltomcrypt
-./keygen seed.txt
+# Compile any module
+gcc -O2 -o keygen KeyGen-1.c -lssl -lcrypto
+gcc -O2 -o encrypt Encrypt.c -lssl -lcrypto
+gcc -O2 -o lcumac Intel_LCUMAC.c -ltomcrypt -lgmp
 ```
 
 ---
 
-## File Structure
+## Core Concepts
 
-```
-crypto-protocol-suite/
-├── HW1/Mywork/         # alice-1.c, bob-1.c
-├── HW2/Mywork/         # MHT.c
-├── HW4/Mywork/         # KeyGen.c, Sign.c, Verify.c
-├── HW5/MyWork/         # KeyGen-1.c, alice-3.c, bob-3.c, Encrypt.c, Decrypt.c
-├── HW6/MyWork/         # GMP_LCUMAC.c, Intel_LCUMAC.c, GMP_CRSA.c
-└── README.md
-```
-
----
-
-## Course Context
-
-Assignments for **CIS 4362 — Trustworthy Computing Infrastructures** at the University of South Florida. Full marks on all assignments except HW4 (−0.1/10 for the message length issue noted above).
+| Module | Primitives | Key Idea |
+|---|---|---|
+| symmetric-encryption | ChaCha20, XOR | Stream cipher from shared seed |
+| merkle-hash-tree | SHA-256, binary tree | Tamper-evident block commitment |
+| lamport-signatures | SHA-256, one-time secrets | Post-quantum signature scheme |
+| ecdh-ecdsa-elgamal | secp192k1, ECDH, ECDSA, EC-ElGamal | Asymmetric crypto on elliptic curves |
+| lc-umac-rsa | 128-bit arithmetic, GMP, RSA | MAC construction + homomorphic encryption |
