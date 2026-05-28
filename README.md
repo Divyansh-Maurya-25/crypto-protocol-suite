@@ -80,10 +80,12 @@ The same MAC computed two ways to verify cross-platform consistency:
 
 **Algorithm:**
 
+```
 q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF43   (128-bit prime)
 For each 8-byte message block m_i with key (a_i, b_i):
 term_i = (a_i × m_i + b_i) mod q
 σ = Σ term_i mod q
+```
 
 Key pairs (a_i, b_i) derived from shared seed via ChaCha20 PRNG.
 
